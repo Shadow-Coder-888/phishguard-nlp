@@ -1,177 +1,112 @@
 import streamlit as st
+import requests
 import pandas as pd
-import joblib
 import os
 
-# ---------------- CONFIG ----------------
+API_BASE = "http://127.0.0.1:8000"
 USER_FILE = "users.csv"
-SCAN_FILE = "scans.csv"
 
-# ---------------- INIT FILES ----------------
-def init_file(file, columns):
-    if not os.path.exists(file) or os.stat(file).st_size == 0:
-        pd.DataFrame(columns=columns).to_csv(file, index=False)
+st.set_page_config(page_title="PhishGuard NLP", layout="centered")
 
-init_file(USER_FILE, ["username", "password", "plan"])
-init_file(SCAN_FILE, ["username", "count"])
-
-# ---------------- SAFE READ ----------------
-def safe_read(file, columns):
-    try:
-        df = pd.read_csv(file)
-        if df.empty:
-            return pd.DataFrame(columns=columns)
-        return df
-    except:
-        return pd.DataFrame(columns=columns)
-
-# ---------------- LOAD MODEL ----------------
-model = joblib.load("model/model.pkl")
-vectorizer = joblib.load("model/vectorizer.pkl")
-
-# ---------------- AUTH ----------------
-def signup(username, password):
-    username = username.strip()
-    password = password.strip()
-
-    if username == "" or password == "":
-        return "empty"
-
-    users = safe_read(USER_FILE, ["username", "password", "plan"])
-
-    # Normalize usernames
-    users["username"] = users["username"].astype(str).str.strip()
-
-    if username in users["username"].values:
-        return "exists"
-
-    new_user = pd.DataFrame(
-        [[username, password, "free"]],
-        columns=["username", "password", "plan"]
-    )
-
-    users = pd.concat([users, new_user], ignore_index=True)
-    users.to_csv(USER_FILE, index=False)
-
-    return "created"
-
-
-def login(username, password):
-    users = safe_read(USER_FILE, ["username", "password", "plan"])
-
-    user = users[
-        (users["username"].astype(str).str.strip() == username.strip()) &
-        (users["password"].astype(str).str.strip() == password.strip())
-    ]
-
-    if not user.empty:
-        return user.iloc[0]["plan"]
-
-    return None
-
-# ---------------- SCAN LOGIC ----------------
-def get_scan_count(username):
-    scans = safe_read(SCAN_FILE, ["username", "count"])
-
-    if username not in scans["username"].astype(str).values:
-        return 0
-
-    return int(scans[scans["username"] == username]["count"].values[0])
-
-
-def update_scan(username):
-    scans = safe_read(SCAN_FILE, ["username", "count"])
-
-    if username in scans["username"].astype(str).values:
-        scans.loc[scans["username"] == username, "count"] += 1
-    else:
-        new_row = pd.DataFrame([[username, 1]], columns=["username", "count"])
-        scans = pd.concat([scans, new_row], ignore_index=True)
-
-    scans.to_csv(SCAN_FILE, index=False)
+# ---------------- INIT FILE ----------------
+if not os.path.exists(USER_FILE):
+    df = pd.DataFrame(columns=["username", "password"])
+    df.to_csv(USER_FILE, index=False)
 
 # ---------------- SESSION ----------------
-if "user" not in st.session_state:
-    st.session_state.user = None
-    st.session_state.plan = None
+if "count" not in st.session_state:
+    st.session_state.count = 0
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# ---------------- AUTH FUNCTIONS ----------------
+def signup(username, password):
+    users = pd.read_csv(USER_FILE)
+
+    if username in users["username"].values:
+        return False
+
+    new_user = pd.DataFrame([[username, password]], columns=["username", "password"])
+    users = pd.concat([users, new_user], ignore_index=True)
+    users.to_csv(USER_FILE, index=False)
+    return True
+
+def login(username, password):
+    users = pd.read_csv(USER_FILE)
+
+    user = users[(users["username"] == username) & (users["password"] == password)]
+
+    if not user.empty:
+        return True
+    return False
+
+# ---------------- API CALL ----------------
+def scan_text(text):
+    try:
+        res = requests.post(API_URL, json={"text": text})
+        if res.status_code == 200:
+            return res.json()["prediction"]
+        else:
+            return "error"
+    except:
+        return "down"
 
 # ---------------- UI ----------------
 st.title("PhishGuard NLP")
 
-menu = st.sidebar.selectbox("Menu", ["Login", "Signup"])
-
-# ---------- SIGNUP ----------
-if menu == "Signup":
-    st.subheader("Signup")
-
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
-
-    if st.button("Create Account"):
-        result = signup(u, p)
-
-        if result == "created":
-            st.success("Account created")
-        elif result == "exists":
-            st.error("Username already exists")
-        else:
-            st.warning("Invalid input")
-
-# ---------- LOGIN ----------
-elif menu == "Login":
-    st.subheader("Login")
-
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
-
-    if st.button("Login"):
-        plan = login(u, p)
-
-        if plan:
-            st.session_state.user = u.strip()
-            st.session_state.plan = plan
-            st.success("Login successful")
-        else:
-            st.error("Invalid credentials")
-
-# ---------- MAIN APP ----------
-if st.session_state.user:
-    st.write(f"User: {st.session_state.user} ({st.session_state.plan})")
-
-    text = st.text_area("Enter message")
-
-    if st.button("Scan"):
-        if text.strip() == "":
-            st.warning("Enter a message")
-        else:
-            count = get_scan_count(st.session_state.user)
-
-            if st.session_state.plan == "free" and count >= 10:
-                st.error("Limit reached (10 scans). Upgrade required.")
-            else:
-                vec = vectorizer.transform([text])
-                pred = model.predict(vec)[0]
-
-                update_scan(st.session_state.user)
-
-                if pred == 1:
-                    st.error("Spam detected")
-                else:
-                    st.success("Safe message")
-
-                st.write(f"Scans used: {count + 1}")
-
-    # ---------- UPGRADE ----------
-    if st.button("Upgrade to Pro"):
-        users = safe_read(USER_FILE, ["username", "password", "plan"])
-        users.loc[users["username"] == st.session_state.user, "plan"] = "pro"
-        users.to_csv(USER_FILE, index=False)
-
-        st.session_state.plan = "pro"
-        st.success("Upgraded to Pro")
-
-    # ---------- LOGOUT ----------
-    if st.button("Logout"):
-        st.session_state.user = None
-        st.session_state.plan = None
+# ---------------- LOGOUT ----------------
+if st.session_state.logged_in:
+    st.sidebar.success(f"Logged in as {st.session_state.username}")
+    if st.sidebar.button("Logout"):
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.count = 0
         st.rerun()
+
+# ---------------- INPUT ----------------
+user_input = st.text_area("Enter Message")
+
+# ---------------- SCAN ----------------
+def scan_api(u, text):
+    res = requests.post(f"{API_BASE}/scan", json={
+        "username": u,
+        "text": text
+    })
+
+    if res.status_code == 200:
+        return res.json()
+    elif res.status_code == 403:
+        return {"error": "limit"}
+    else:
+        return {"error": "other"}
+
+# ---------------- FORCE AUTH UI ----------------
+if (not st.session_state.logged_in and st.session_state.count >= 5) or st.session_state.get("show_auth", False):
+
+    st.warning("Free limit reached. Please login or signup.")
+
+    tab1, tab2 = st.tabs(["Login", "Signup"])
+
+    # -------- LOGIN --------
+    with tab1:
+        l_user = st.text_input("Username", key="login_user")
+        l_pass = st.text_input("Password", type="password", key="login_pass")
+
+    def login_api(u, p):
+        res = requests.post(f"{API_BASE}/login", json={"username": u, "password": p})
+        return res.status_code == 200
+    # -------- SIGNUP --------
+    with tab2:
+        s_user = st.text_input("New Username", key="signup_user")
+        s_pass = st.text_input("New Password", type="password", key="signup_pass")
+
+    def signup_api(u, p):
+        res = requests.post(f"{API_BASE}/signup", json={"username": u, "password": p})
+        return res.status_code == 200
+# ---------------- INFO ----------------
+if not st.session_state.logged_in:
+    st.info(f"Free usage: {st.session_state.count}/5")
