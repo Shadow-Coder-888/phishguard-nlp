@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 
 # ---------------- LOAD ----------------
-df = pd.read_csv("data/spam.csv")
+df = pd.read_csv("C:/projects/phishguard-nlp/data/spam.csv")
 
 # ---------------- CLEAN ----------------
 def clean_text(text):
